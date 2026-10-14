@@ -1,0 +1,6 @@
+sample_id,group,count_matrix_dir,bam_path
+Sample_01,Group_A,data/Sample_01/filtered_feature_bc_matrix,data/Sample_01/possorted_genome_bam.bam
+Sample_02,Group_A,data/Sample_02/filtered_feature_bc_matrix,data/Sample_02/possorted_genome_bam.bam
+Sample_03,Group_B,data/Sample_03/filtered_feature_bc_matrix,data/Sample_03/possorted_genome_bam.bam
+Sample_04,Group_B,data/Sample_04/filtered_feature_bc_matrix,data/Sample_04/possorted_genome_bam.bam
+
