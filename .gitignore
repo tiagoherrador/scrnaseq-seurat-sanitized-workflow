@@ -29,6 +29,10 @@ R_objects/
 *.jpg
 *.jpeg
 
+# Curated, privacy-reviewed figures embedded in the README
+!assets/
+!assets/*.png
+
 # Version only the configuration template
 !config/example_samples.csv
 
