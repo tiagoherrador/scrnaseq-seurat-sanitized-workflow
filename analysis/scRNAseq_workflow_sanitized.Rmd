@@ -1,0 +1,276 @@
+---
+title: "scRNA-seq workflow — anonymized version"
+subtitle: "Seurat analysis without CellSweep"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+---
+
+~~~{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE, echo = TRUE, warning = FALSE, message = FALSE)
+~~~
+
+# Purpose and data protection
+
+This notebook documents a reproducible workflow for analyzing single-cell RNA-seq count matrices produced by a pipeline compatible with the 10x format. It is an anonymized copy of the analysis: it contains no data, results, personal paths, original sample names, experimental conditions, or restricted references.
+
+The data/ directory is excluded from Git. Before executing this notebook, create config/samples.csv locally from config/example_samples.csv and confirm it will not be versioned.
+
+# 1. Setup
+
+## Packages
+
+~~~{r libraries}
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+
+# Required only when nuclear fraction will be calculated from BAM files:
+# library(DropletQC)
+# library(Rsamtools)
+~~~
+
+## Local configuration
+
+Relative paths prevent disclosure of workstation structure. The configuration table should have one row per library and the columns sample_id, group, count_matrix_dir, and, if applicable, bam_path.
+
+~~~{r config}
+stopifnot(file.exists("config/samples.csv"))
+samples <- readr::read_csv("config/samples.csv", show_col_types = FALSE)
+stopifnot(all(c("sample_id", "group", "count_matrix_dir") %in% names(samples)))
+stopifnot(!anyDuplicated(samples$sample_id))
+
+# Retain only metadata needed for analytical traceability.
+samples <- samples |> dplyr::select(sample_id, group, count_matrix_dir, bam_path)
+~~~
+
+# 2. Count-matrix import and initial quality control
+
+## Load count matrices
+
+Each matrix must correspond to a previously processed library and contain unnormalized counts. If Read10X() returns a multimodal list, explicitly select the gene-expression modality.
+
+~~~{r load-counts}
+count_matrices <- purrr::set_names(samples$count_matrix_dir, samples$sample_id) |>
+  purrr::map(Read10X)
+
+count_matrices <- purrr::map(count_matrices, \(x) {
+  if (is.list(x)) x[["Gene Expression"]] else x
+})
+~~~
+
+## Create Seurat objects and calculate QC metrics
+
+Calculate mitochondrial percentage and a complexity metric (log10GenesPerUMI). Adapt the mitochondrial gene pattern to the naming convention of the reference in use.
+
+~~~{r create-seurat}
+seurat_objects <- purrr::imap(count_matrices, \(counts, sample_name) {
+  obj <- CreateSeuratObject(
+    counts = counts,
+    project = sample_name,
+    min.cells = 3,
+    min.features = 200
+  )
+  obj[["percent.mt"]] <- PercentageFeatureSet(obj, pattern = "^mt-")
+  obj$log10GenesPerUMI <- log10(obj$nFeature_RNA) / log10(obj$nCount_RNA)
+  obj$sample_id <- sample_name
+  obj$group <- samples$group[match(sample_name, samples$sample_id)]
+  obj
+})
+
+qc_metadata <- purrr::map(seurat_objects, \(x) x[[]]) |> dplyr::bind_rows()
+~~~
+
+## Inspect QC distributions
+
+Do not inherit thresholds from another cohort. Review every sample, the metric distributions, and their joint patterns before deciding exclusions.
+
+~~~{r qc-plots}
+all_cells <- merge(seurat_objects[[1]], y = seurat_objects[-1])
+VlnPlot(
+  all_cells,
+  features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+  group.by = "sample_id", ncol = 3, pt.size = 0
+)
+
+qc_metadata |>
+  ggplot(aes(nCount_RNA, percent.mt, colour = sample_id)) +
+  geom_point(alpha = 0.25, size = 0.2) +
+  scale_x_log10() +
+  theme_classic()
+~~~
+
+# 3. Nuclear fraction (optional)
+
+Nuclear fraction is estimated before filtering from BAM files and added to cell metadata. This requires BAM barcode names to match the count-matrix barcodes. BAM files, indexes, and barcode tables must never be uploaded to this repository.
+
+~~~{r nuclear-fraction}
+# Requires DropletQC and Rsamtools; this is a template.
+# nf_by_sample <- purrr::pmap(
+#   samples |> dplyr::select(sample_id, bam_path),
+#   function(sample_id, bam_path) {
+#     barcodes <- colnames(seurat_objects[[sample_id]])
+#     nf <- nuclear_fraction(bam = bam_path, barcodes = barcodes)
+#     tibble::tibble(barcode = rownames(nf), nuclear_fraction = nf[, 1])
+#   }
+# )
+#
+# purrr::iwalk(nf_by_sample, function(nf, sample_id) {
+#   obj <- seurat_objects[[sample_id]]
+#   obj$nuclear_fraction <- nf$nuclear_fraction[match(colnames(obj), nf$barcode)]
+#   seurat_objects[[sample_id]] <<- obj
+# })
+~~~
+
+# 4. Normalization, dimensionality reduction, and initial clustering
+
+Normalize each sample separately first to identify technical anomalies. Then merge libraries and reprocess the combined object. Choose the number of principal components and the clustering resolution using diagnostics rather than copying values from another run.
+
+~~~{r normalize-per-sample}
+seurat_processed <- purrr::map(seurat_objects, \(obj) {
+  obj |>
+    NormalizeData(verbose = FALSE) |>
+    FindVariableFeatures(verbose = FALSE) |>
+    ScaleData(verbose = FALSE) |>
+    RunPCA(verbose = FALSE)
+})
+
+ElbowPlot(seurat_processed[[1]])
+~~~
+
+~~~{r merge-and-cluster}
+combined <- merge(
+  x = seurat_objects[[1]],
+  y = seurat_objects[-1],
+  add.cell.ids = names(seurat_objects)
+)
+
+combined <- combined |>
+  NormalizeData(verbose = FALSE) |>
+  FindVariableFeatures(verbose = FALSE) |>
+  ScaleData(verbose = FALSE) |>
+  RunPCA(verbose = FALSE) |>
+  FindNeighbors(dims = 1:30, verbose = FALSE) |>
+  FindClusters(resolution = c(0.2, 0.5, 1.0), verbose = FALSE) |>
+  RunUMAP(dims = 1:30, verbose = FALSE)
+~~~
+
+## Cluster diagnostics
+
+~~~{r cluster-diagnostics}
+DimPlot(combined, group.by = "sample_id") + DimPlot(combined, group.by = "group")
+FeaturePlot(combined, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"))
+VlnPlot(combined, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"), pt.size = 0)
+~~~
+
+# 5. Markers and population identification
+
+Annotation should be supported by literature markers or references that the analyst is authorized to use. Keep a marker list in local configuration if it reveals non-shareable study details.
+
+~~~{r markers}
+Idents(combined) <- "RNA_snn_res.0.5"  # choose after diagnostic review
+cluster_markers <- FindAllMarkers(
+  combined,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  logfc.threshold = 0.25
+)
+
+# Example: load an approved local marker table that is not versioned.
+# marker_panel <- readr::read_csv("private/marker_panel.csv")
+# DotPlot(combined, features = marker_panel$gene) + RotatedAxis()
+~~~
+
+# 6. Iterative filtering and reprocessing
+
+Document filtering decisions and apply them as an explicit cluster vector or a justified QC rule. Do not encode original cluster numbers, thresholds, or cell-population names here.
+
+~~~{r filter-round-1}
+# Complete this only after reviewing QC, markers, and sample composition.
+clusters_to_remove <- character(0)
+
+filtered <- subset(
+  combined,
+  idents = setdiff(levels(Idents(combined)), clusters_to_remove)
+)
+
+filtered <- filtered |>
+  NormalizeData(verbose = FALSE) |>
+  FindVariableFeatures(verbose = FALSE) |>
+  ScaleData(verbose = FALSE) |>
+  RunPCA(verbose = FALSE) |>
+  FindNeighbors(dims = 1:30, verbose = FALSE) |>
+  FindClusters(resolution = c(0.2, 0.5, 1.0), verbose = FALSE) |>
+  RunUMAP(dims = 1:30, verbose = FALSE)
+~~~
+
+Repeat QC plots, the cell distribution by sample, and marker review after each filtering round. If nuclear fraction is calculated, retain the previously added values and check that they do not introduce library- or cluster-specific bias.
+
+~~~{r filtered-qc}
+DimPlot(filtered, group.by = "sample_id")
+FeaturePlot(filtered, features = c("nCount_RNA", "nFeature_RNA", "percent.mt"))
+table(filtered$sample_id, Idents(filtered))
+~~~
+
+# 7. Label transfer (optional)
+
+An external reference must be authorized, versioned according to its terms of use, and stored outside this repository if it contains restricted data. Treat transfer results as complementary evidence and validate them with markers and QC.
+
+~~~{r label-transfer}
+# reference <- readRDS("private/reference_object.rds")
+# anchors <- FindTransferAnchors(
+#   reference = reference,
+#   query = filtered,
+#   normalization.method = "SCT",
+#   dims = 1:30
+# )
+# predictions <- TransferData(
+#   anchorset = anchors,
+#   refdata = reference$approved_label,
+#   dims = 1:30
+# )
+# filtered <- AddMetaData(filtered, metadata = predictions)
+# DimPlot(filtered, group.by = "predicted.id", label = TRUE)
+~~~
+
+# 8. Subsetting and downstream analysis (optional)
+
+After identifying a population of interest, create a subset using an explicit rule, then repeat normalization and dimensionality reduction. Record the selection criterion in an internal document without placing sensitive identifiers or results in this repository.
+
+~~~{r subset-and-reprocess}
+# cells_of_interest <- WhichCells(filtered, expression = approved_annotation %in% c("Population_A"))
+# subset_object <- subset(filtered, cells = cells_of_interest)
+# subset_object <- subset_object |>
+#   NormalizeData(verbose = FALSE) |>
+#   FindVariableFeatures(verbose = FALSE) |>
+#   ScaleData(verbose = FALSE) |>
+#   RunPCA(verbose = FALSE) |>
+#   FindNeighbors(dims = 1:20, verbose = FALSE) |>
+#   FindClusters(resolution = c(0.2, 0.5), verbose = FALSE) |>
+#   RunUMAP(dims = 1:20, verbose = FALSE)
+~~~
+
+# 9. Outputs and reproducibility
+
+Save objects, tables, and figures only to a Git-ignored local directory. Before sharing outputs, apply the privacy review and project rules.
+
+~~~{r local-outputs}
+# dir.create("results", showWarnings = FALSE)
+# saveRDS(filtered, "results/filtered_seurat_object.rds")
+# readr::write_csv(cluster_markers, "results/cluster_markers.csv")
+# ggsave("results/umap.png", DimPlot(filtered))
+
+sessionInfo()
+~~~
+
+## Pre-publication checklist
+
+- [ ] No count matrices, BAM/FASTQ files, R objects, metadata, or results are versioned.
+- [ ] Paths are relative and disclose no accounts, machines, or locations.
+- [ ] Original identifiers were replaced with generic values.
+- [ ] Git status shows no ignored files staged for commit.
+- [ ] R and package versions are captured in a local report or a reviewed lockfile.
+
