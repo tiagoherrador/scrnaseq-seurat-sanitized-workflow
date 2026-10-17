@@ -1,66 +1,94 @@
-# scRNA-seq analysis — from quality control to a focused 933-cell subset
+# scRNA-seq – from 6,384 raw cells to a focused population of 933, with Seurat
 
-This repository is a visual, privacy-preserving record of a single-cell RNA-seq analysis performed in R with Seurat, without CellSweep. It presents the analytical path and its aggregate outputs, not a reusable data-release package.
+> **A real analysis, shown without its data.** The study behind it is not published, so this repository shows how I worked rather than what I found. Every gene, cluster, sample and condition in the figures has a generic label.
 
-> **Privacy notice.** No count matrix, sequencing file, serialized R object, sample identifier, condition label, gene name, reference object, or cell-level metadata is included. Every figure is an approved aggregate view with generic labels only.
+## What this project is
 
-## Result
+This is a single-cell RNA-seq analysis I did in R with Seurat, on 10x Genomics data from several samples in two experimental groups. In single-cell data most of the work is deciding which cells to trust and which structure is biology rather than noise, and that is what I want to show here: the decisions at each step, the annotated notebook, and the figures that came out of them.
 
-The analysis converged on a focused subset of **933 cells** after quality review, reprocessing, and subset selection. The final representation retains the unsupervised structure required for downstream differential-expression screening, while withholding all study-specific identities.
+The questions I worked through are:
 
-| Focused 933-cell subset | Differential-expression screening |
+1. **Which cells are good enough to keep?**
+2. **What structure is left once the technical noise is out?**
+3. **Which population matters for the study, and what does it look like on its own?**
+4. **Which genes change between the two groups inside that population?**
+
+## The short version
+
+| Question | What I did and found |
 |---|---|
-| ![Focused 933-cell UMAP](assets/umap_final_subset_933.png) | ![Anonymized differential-expression volcano plots](assets/deg_volcano_plots.png) |
+| Which cells are good enough to keep? | **5,641 of 6,384 cells (88 %).** I set the cut-offs by looking at every sample's own distributions of genes, UMIs, mitochondrial share and complexity, not by copying thresholds from another study. |
+| What structure is left? | After re-processing the clean cells, they form clear clusters, which I characterised with marker genes. |
+| Which population matters? | I isolated **933 cells** and re-processed them on their own, so their structure is not dominated by the cells I set aside. |
+| What changes between the groups? | I ran a differential-expression screen cluster by cluster inside the subset. The genes and their direction stay private until the study is published. |
 
-The UMAP groups transcriptionally similar cells in a two-dimensional representation. The volcano panels summarize the differential-expression screen by anonymized cluster. Neither plot names biological populations, samples, conditions, contrasts, or genes.
+## What the analysis gives you
 
-## Analysis sequence
+The focused population of 933 cells, and the differential-expression screen inside it:
 
-### 1. Quality-control filtering
+| Focused 933-cell subset | Differential expression by cluster |
+|---|---|
+| ![Focused 933-cell UMAP](assets/umap_final_subset_933.png) | ![Differential-expression volcano plots](assets/deg_volcano_plots.png) |
 
-Technical QC metrics were reviewed across the pooled dataset, and cells failing the established quality criteria were removed before downstream reprocessing. The figure shows the aggregate change from **6,384** cells to **5,641** cells; no source-library or condition information is displayed.
+*How to read them.* In the UMAP (left) each dot is a cell, and cells with similar gene activity sit close together; the colours are the clusters. In each volcano plot (right) each dot is a gene: the further to the left or right, the bigger the change between the two groups, and the higher, the more confident the test.
+
+## Following the analysis step by step
+
+<details>
+<summary><b>Show the five steps</b> (quality control, markers, the clean dataset, the focused subset, differential expression)</summary>
+
+### 1. Quality control
+
+For every cell I computed the number of genes and UMIs, the share of mitochondrial reads (a sign of damaged or dying cells) and a complexity score (genes per UMI, which drops in low-quality droplets). The notebook also has an optional step to estimate the nuclear fraction from the BAM files with DropletQC. I first normalised each sample on its own to spot technical problems in a single library, then looked at the distributions sample by sample before choosing the cut-offs. Going from 6,384 to 5,641 cells:
 
 ![Quality-control filtering](assets/quality_control_filtering.png)
 
-### 2. Marker dot plot
+### 2. Markers
 
-Cluster-associated features were reviewed alongside the QC results. The plot preserves the expression-pattern logic—colour for scaled expression and dot size for detection rate—while replacing every feature and cluster label with a generic identifier.
+After merging the samples I normalised, ran PCA and clustered at several resolutions, choosing the number of components and the resolution from diagnostic plots. I then looked for the genes that set each cluster apart (`FindAllMarkers`). The dot plot keeps the logic of the original (colour for average expression, dot size for the share of cells that express the gene), with every gene and cluster renamed:
 
-![Anonymized marker dot plot](assets/marker_dot_plot.png)
+![Marker dot plot](assets/marker_dot_plot.png)
 
-### 3. UMAP after the QC pass
+### 3. The clean dataset
 
-The reprocessed, quality-filtered dataset was inspected in UMAP space to assess its unsupervised structure before narrowing to the focused population.
+Filtering was iterative: after each round I re-ran normalisation, PCA, clustering and UMAP, and checked again the QC metrics, the markers and how the cells of each sample spread across the clusters, so that no cluster was explained by a single library. This is the dataset after quality control:
 
-![UMAP after quality-control filtering](assets/umap_after_qc.png)
+![UMAP after quality control](assets/umap_after_qc.png)
 
-### 4. Focused subset of 933 cells
+### 4. The focused subset
 
-Cells selected for the focused analysis were reprocessed and embedded again. This is the final UMAP shown in the result section above; it is repeated here to keep the workflow chronological.
+I then selected the population relevant to the study, 933 cells, and processed it again from scratch (normalisation, variable genes, PCA, clustering and UMAP). Re-processing a subset matters: the variable genes and principal components of the full dataset are chosen to separate very different cell types, and they can hide the finer structure inside one population.
 
 ![Focused 933-cell UMAP](assets/umap_final_subset_933.png)
 
-### 5. Differential-expression volcano plots
+### 5. Differential expression
 
-Differential-expression results were screened within the focused analysis. Each panel corresponds to an anonymized unsupervised cluster. Point identities and the compared conditions are intentionally withheld.
+Inside the subset I compared the two experimental groups cluster by cluster. Each panel is one cluster; the identity of the genes and of the groups is left out on purpose.
 
-![Anonymized differential-expression volcano plots](assets/deg_volcano_plots.png)
+![Differential-expression volcano plots](assets/deg_volcano_plots.png)
 
-## What is documented here
+</details>
 
-The complete annotated analysis narrative is available in [analysis/scRNAseq_workflow_sanitized.Rmd](analysis/scRNAseq_workflow_sanitized.Rmd). It records the quality assessment, dimensionality reduction, iterative filtering, marker review, subset analysis, and differential-expression stages without including restricted inputs or study-specific labels.
+## Things to keep in mind
 
-## Data protection and interpretation limits
+- **No data are included.** The repository has no count matrices, sequencing files, R objects, sample names, conditions, gene names or cell-level tables, and the [.gitignore](.gitignore) keeps them out. The figures are aggregate views with generic labels.
+- **The figures show the method, not a result.** Without the gene names and the groups they cannot be read as a biological conclusion, and the interpretation of the study belongs to the study itself.
+- **The notebook cannot be re-run from this repository.** It needs the original data, and several steps (the clusters removed in each round, the marker panel, the reference for label transfer) are left as documented placeholders.
 
-- Restricted source data, per-cell tables, sample metadata, R objects, and arbitrary analysis outputs are excluded by [.gitignore](.gitignore).
-- Labels in the figures are sanitized: clusters are generic and size-ranked, marker features are renumbered, and comparison labels are omitted.
-- These aggregate plots document analytical capability and workflow progression. They are not a biological conclusion, a data release, or a clinical tool.
-- Interpretation of the protected study remains confined to the authorized analysis environment.
+## Try it yourself
 
-## Main dependencies
+The full, annotated analysis is in [analysis/scRNAseq_workflow_sanitized.Rmd](analysis/scRNAseq_workflow_sanitized.Rmd). It works as a template for your own 10x data:
 
-R (>= 4.3), Seurat (v5), tidyverse, patchwork and, for nuclear-fraction calculation, DropletQC and Rsamtools.
+1. Copy `config/example_samples.csv` to `config/samples.csv` and fill in your samples, groups and paths.
+2. Put the count matrices (and, for the nuclear fraction, the BAM files) in `data/`, which Git ignores.
+3. Open the notebook in RStudio and run it chunk by chunk, making each decision on your own data.
 
-## License
+[scripts/render_sanitized_figures.R](scripts/render_sanitized_figures.R) is the script I used to make the anonymised figures from the local Seurat objects.
 
-Add the license that applies before redistributing the code.
+## Built with
+
+R (≥ 4.3), Seurat (v5), tidyverse, patchwork and, for the nuclear fraction, DropletQC and Rsamtools.
+
+## Author
+
+Tiago Alejo Herrador. No licence has been chosen yet, so please ask before reusing the code.
